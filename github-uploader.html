@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>GitHub Folder Uploader</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#8b949e;--blue:#238636;--blue2:#2f81f7;--red:#f85149}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:760px;margin:auto;padding:28px 16px 56px}h1{font-size:26px;margin:0 0 6px}p{color:var(--muted);margin:6px 0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin:16px 0}
+label{display:block;font-weight:600;margin:13px 0 6px}input,button{font:inherit}input[type=text],input[type=password]{width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0d1117;color:var(--text)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.hint{font-size:13px;color:var(--muted)}button{border:0;border-radius:9px;padding:12px 16px;background:var(--blue);color:white;font-weight:700;cursor:pointer;width:100%;margin-top:14px}button:disabled{opacity:.55;cursor:wait}.secondary{background:#30363d}.pick{display:block;border:1px dashed #57606a;border-radius:10px;padding:18px;text-align:center;margin-top:8px}.pick input{max-width:100%;margin-top:8px}.status{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;background:#0d1117;border:1px solid var(--line);border-radius:9px;padding:12px;min-height:52px}
+.warn{border-left:3px solid #d29922;padding-left:12px;color:#e3b341;font-size:13px}.ok{color:#3fb950}.bad{color:var(--red)}.progress{height:7px;background:#30363d;border-radius:9px;overflow:hidden;margin-top:12px}.bar{height:100%;width:0;background:var(--blue2);transition:width .2s}
+@media(max-width:560px){.row{grid-template-columns:1fr}main{padding-top:20px}.card{padding:15px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>GitHub Folder Uploader</h1>
+  <p>Upload a folder and its subfolders to a GitHub repository in one commit. No Git client subscription required.</p>
+
+  <section class="card">
+    <h2>1. Sign in to GitHub</h2>
+    <label for="token">Personal Access Token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="github_pat_…" />
+    <div class="hint">Use a fine-grained token with repository access and Contents: Read and write. This is token-based sign-in, not your GitHub password. The token stays in this tab and is sent only to api.github.com.</div>
+    <button id="login" class="secondary" type="button">Sign in &amp; load my repositories</button>
+    <div id="account" class="hint" aria-live="polite">Not signed in.</div>
+    <label for="repository">2. Select repository</label>
+    <select id="repository" disabled style="width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0d1117;color:var(--text)">
+      <option value="">Sign in to load repositories…</option>
+    </select>
+    <div class="row">
+      <div><label for="branch">Branch</label>
+        <select id="branch" disabled style="width:100%;padding:12px;border:1px solid var(--line);border-radius:9px;background:#0d1117;color:var(--text)"><option value="">Select a repository first</option></select>
+      </div>
+      <div><label for="target">Destination folder (optional)</label><input id="target" type="text" placeholder="e.g. assets/site"></div>
+    </div>
+    <label for="message">Commit message</label>
+    <input id="message" type="text" value="Upload folder from iPhone">
+    <p class="hint">The repository and branch must already exist. Existing files with the same paths will be replaced.</p>
+  </section>
+
+  <section class="card">
+    <h2>2. Choose folder</h2>
+    <div class="pick">
+      <strong>Select a folder</strong><br>
+      <span class="hint">Choose the folder from the Files picker. Subfolders are included where supported.</span><br>
+      <input id="files" type="file" webkitdirectory directory multiple>
+    </div>
+    <p id="selection" class="hint">No files selected.</p>
+    <p class="warn">iPhone note: folder selection depends on iOS/Safari support. If the picker does not let you select a folder or paths are missing, this browser cannot provide a reliable recursive folder upload. Try opening this page in Safari rather than an in-app browser.</p>
+  </section>
+
+  <section class="card">
+    <h2>3. Upload</h2>
+    <p class="hint">This creates Git blobs, a tree, and one commit, then updates the selected branch. Files are uploaded directly from your device to GitHub.</p>
+    <button id="upload">Upload folder to GitHub</button>
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <p id="status" class="status" role="status">Ready.</p>
+  </section>
+
+  <section class="card">
+    <h2>Creating a token</h2>
+    <ol class="hint">
+      <li>On GitHub, open Settings → Developer settings → Personal access tokens → Fine-grained tokens.</li>
+      <li>Create a fine-grained token and grant access to the repositories you want to see here (or choose all repositories).</li>
+      <li>Grant <b>Contents: Read and write</b> and <b>Metadata: Read-only</b>.</li>
+      <li>Copy the token into this page. Do not share it or put it in a public repository.</li>
+    </ol>
+    <p class="warn">For safety, use a short-lived/repository-limited token and revoke it after uploading if you no longer need it. Anyone who can access this page while the token is entered could potentially use it.</p>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const filesInput = $('files');
+let selected = [];
+let signedInUser = null;
+let repositories = [];
+filesInput.addEventListener('change', () => {
+  selected = Array.from(filesInput.files || []);
+  const missingPaths = selected.filter(f => !f.webkitRelativePath);
+  $('selection').textContent = selected.length
+    ? `${selected.length} file(s) selected${missingPaths.length ? `; ${missingPaths.length} file(s) have no folder path` : ''}.`
+    : 'No files selected.';
+});
+
+function setStatus(message, kind='') {
+  $('status').textContent = message;
+  $('status').className = 'status ' + kind;
+}
+function setProgress(n) { $('bar').style.width = `${Math.max(0,Math.min(100,n))}%`; }
+function cleanPath(s) {
+  const parts = s.replace(/\\/g,'/').split('/').filter(Boolean);
+  if (!parts.length || parts.some(p => p === '.' || p === '..')) throw new Error('Invalid file path: ' + s);
+  return parts.join('/');
+}
+async function api(path, token, options={}) {
+  const res = await fetch('https://api.github.com' + path, {
+    ...options,
+    headers: {
+      'Accept':'application/vnd.github+json',
+      'Authorization':'Bearer ' + token,
+      'X-GitHub-Api-Version':'2022-11-28',
+      ...(options.body ? {'Content-Type':'application/json'} : {}),
+      ...(options.headers || {})
+    }
+  });
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.message || `GitHub API error (${res.status})`);
+  return data;
+}
+function tokenValue() { return $('token').value.trim(); }
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
+  return btoa(binary);
+}
+function selectedRepo() {
+  const value = $('repository').value;
+  return repositories.find(r => r.full_name === value);
+}
+async function loadBranches(repo) {
+  const branchSelect = $('branch');
+  branchSelect.disabled = true;
+  branchSelect.innerHTML = '<option value="">Loading branches…</option>';
+  const token = tokenValue();
+  let branches = [];
+  for (let page=1; page<=5; page++) {
+    const batch = await api(`/repos/${encodeURIComponent(repo.owner.login)}/${encodeURIComponent(repo.name)}/branches?per_page=100&page=${page}`, token);
+    branches = branches.concat(batch);
+    if (batch.length < 100) break;
+  }
+  branchSelect.innerHTML = '';
+  for (const branch of branches) {
+    const option = document.createElement('option');
+    option.value = branch.name;
+    option.textContent = branch.name;
+    branchSelect.appendChild(option);
+  }
+  if (!branches.length) {
+    branchSelect.innerHTML = '<option value="">No branches found</option>';
+  } else {
+    branchSelect.value = repo.default_branch || branches[0].name;
+  }
+  branchSelect.disabled = !branches.length;
+}
+$('login').addEventListener('click', async () => {
+  const token = tokenValue();
+  if (!token) return setStatus('Paste your GitHub token first.', 'bad');
+  const button = $('login');
+  button.disabled = true;
+  $('account').textContent = 'Signing in and loading repositories…';
+  $('repository').disabled = true;
+  $('branch').disabled = true;
+  try {
+    const user = await api('/user', token);
+    signedInUser = user;
+    repositories = [];
+    for (let page=1; page<=10; page++) {
+      const batch = await api(`/user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100&page=${page}`, token);
+      repositories = repositories.concat(batch);
+      if (batch.length < 100) break;
+    }
+    $('account').textContent = `Signed in as @${user.login}. Found ${repositories.length} accessible repositories.`;
+    const select = $('repository');
+    select.innerHTML = '<option value="">Choose a repository…</option>';
+    for (const repo of repositories) {
+      const option = document.createElement('option');
+      option.value = repo.full_name;
+      option.textContent = `${repo.full_name}${repo.private ? ' 🔒' : ''}`;
+      select.appendChild(option);
+    }
+    select.disabled = repositories.length === 0;
+    if (repositories.length) {
+      const first = repositories[0];
+      select.value = first.full_name;
+      await loadBranches(first);
+      setStatus('Signed in. Choose a repository and folder, then upload.', 'ok');
+    } else {
+      setStatus('Signed in, but no accessible repositories were returned. Check token repository access.', 'bad');
+    }
+  } catch (err) {
+    signedInUser = null; repositories = [];
+    $('account').textContent = 'Sign-in failed.';
+    setStatus('Sign-in failed: ' + err.message + '\nCheck that the token is valid and has repository Metadata read access.', 'bad');
+  } finally {
+    button.disabled = false;
+  }
+});
+$('repository').addEventListener('change', async () => {
+  const repo = selectedRepo();
+  if (!repo) return;
+  try {
+    await loadBranches(repo);
+    setStatus(`Selected ${repo.full_name}.`, '');
+  } catch (err) {
+    $('branch').disabled = true;
+    setStatus('Could not load branches: ' + err.message, 'bad');
+  }
+});
+$('upload').addEventListener('click', async () => {
+  const button = $('upload');
+  const token = tokenValue();
+  const repo = selectedRepo();
+  const branch = $('branch').value;
+  const target = $('target').value.trim().replace(/^\/+|\/+$/g,'');
+  const message = $('message').value.trim() || 'Upload folder';
+  if (!token || !signedInUser) return setStatus('Sign in to GitHub first.', 'bad');
+  if (!repo) return setStatus('Select a repository first.', 'bad');
+  if (!branch) return setStatus('Select a branch first.', 'bad');
+  if (!selected.length) return setStatus('Select a folder first.', 'bad');
+  if (selected.some(f => !f.webkitRelativePath)) return setStatus('Some selected files have no folder-relative path. Re-select the folder using a browser that supports directory uploads.', 'bad');
+  if (selected.some(f => f.size > 25 * 1024 * 1024)) return setStatus('A file is larger than 25 MB. This uploader limits individual files to 25 MB for reliability.', 'bad');
+
+  const paths = selected.map(f => cleanPath((target ? target + '/' : '') + f.webkitRelativePath));
+  if (new Set(paths).size !== paths.length) return setStatus('Duplicate file paths detected. Please select the folder again.', 'bad');
+
+  button.disabled = true; setProgress(0);
+  try {
+    const base = `/repos/${encodeURIComponent(repo.owner.login)}/${encodeURIComponent(repo.name)}`;
+    setStatus('Checking selected branch…');
+    const ref = await api(`${base}/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g,'/')}`, token);
+    const parentSha = ref.object.sha;
+    const parentCommit = await api(`${base}/git/commits/${parentSha}`, token);
+    const entries = [];
+    for (let i=0;i<selected.length;i++) {
+      const file = selected[i];
+      setStatus(`Uploading file ${i+1} of ${selected.length}: ${paths[i]}`);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const blob = await api(`${base}/git/blobs`, token, {
+        method:'POST',
+        body:JSON.stringify({content:bytesToBase64(bytes), encoding:'base64'})
+      });
+      entries.push({path:paths[i], mode:'100644', type:'blob', sha:blob.sha});
+      setProgress(((i+1)/selected.length)*80);
+    }
+    setStatus('Creating Git tree…');
+    const tree = await api(`${base}/git/trees`, token, {
+      method:'POST', body:JSON.stringify({base_tree:parentCommit.tree.sha, tree:entries})
+    });
+    setProgress(86);
+    setStatus('Creating commit…');
+    const commit = await api(`${base}/git/commits`, token, {
+      method:'POST', body:JSON.stringify({message, tree:tree.sha, parents:[parentSha]})
+    });
+    setProgress(94);
+    setStatus('Updating branch…');
+    await api(`${base}/git/refs/heads/${encodeURIComponent(branch).replace(/%2F/g,'/')}`, token, {
+      method:'PATCH', body:JSON.stringify({sha:commit.sha, force:false})
+    });
+    setProgress(100);
+    setStatus(`Success! Uploaded ${selected.length} file(s) in one commit.\nCommit: ${commit.sha}\nRepository: ${repo.html_url}/tree/${encodeURIComponent(branch)}`, 'ok');
+  } catch (err) {
+    setStatus('Upload failed: ' + (err && err.message ? err.message : String(err)) + '\n\nCheck token Contents: Read and write permission, branch access, and whether the branch changed during upload.', 'bad');
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
